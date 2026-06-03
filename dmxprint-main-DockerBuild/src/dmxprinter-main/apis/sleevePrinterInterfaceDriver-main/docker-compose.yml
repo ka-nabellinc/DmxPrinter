@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+    spid:
+        image: sleeve-printer-interface-driver:0.1
+        restart: always
+        tty: true
+        container_name: spid
+        privileged: true
+        environment:
+            - RECEIVER_HOST=127.0.0.1
+            - RECEIVER_PORT=8989
+            - USB_DEV_NAME=AUTO
+

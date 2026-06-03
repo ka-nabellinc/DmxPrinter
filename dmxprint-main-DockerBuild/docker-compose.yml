@@ -1,0 +1,99 @@
+services:
+    dmxprinter:
+        build: ./src/dmxprinter-main/apis/printer
+        restart: always
+        container_name: dmxprinter
+        ports:
+            - "50002:50002"
+            - "5002:6002"
+        environment:
+            - PRINTER_HOST=192.168.100.100
+            - PRINTER_PORT=50002
+            - BY_ENCODE=ascii
+            - STAY_TIME=10.0
+            - DELAY=0.1
+        volumes:
+            - ./src/dmxprinter-main/apis/printer/src:/home/Python/src/printer
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.111
+    main:
+        build: ./src/dmxprinter-main/apis/main
+        restart: always
+        container_name: dmxprint-main
+        privileged: true
+        devices:
+            - "/dev/gpiomem:/dev/gpiomem"
+            - "/dev/gpiochip0:/dev/gpiochip0"
+        ports:
+            - "5001:6001"
+            - "8989:8989"
+        environment:
+            - BY_ENCODE=ascii
+            - DELAY=0.1
+            # NG センサー接続先（config.ini より優先される）
+            # config.ini の NG_HOST を環境変数で上書きすることで
+            # コンテナ再ビルドなしに変更できる
+            - NG_SENSOR_HOST=192.168.100.110
+            - NG_SENSOR_PORT=9004
+        volumes:
+            - ./src/dmxprinter-main/apis/main/src:/home/Python/src/main
+        tty: true
+        stdin_open: true
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.112
+
+    uuid:
+        build: ./src/dmxprinter-main/apis/uuid
+        restart: always
+        container_name: dmxprint-uuid
+        ports:
+            - "5003:6003"
+        environment:
+            - UUID_HOST=uuid
+            - UUID_PORT=5003
+        volumes:
+            - ./src/dmxprinter-main/apis/uuid/src:/home/Python/src/uuid
+            - ./src/dmxprinter-main/apis/uuid/output:/home/Python/src/uuid/output
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.113
+
+    dmxconveyor:
+        build: ./src/dmxprinter-main/apis/conveyor
+        restart: always
+        container_name: dmxconveyor
+        ports:
+            - "5004:6004"
+        environment:
+            - CONVAYOR_PORT=5004
+        volumes:
+            - ./src/dmxprinter-main/apis/conveyor/src:/home/Python/src/conveyor
+        devices:
+            - "/dev/gpiomem:/dev/gpiomem"
+            - "/dev/gpiochip0:/dev/gpiochip0"
+        privileged: true
+
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.114
+    spid:
+        image: sleeve-printer-interface-driver:0.1
+        restart: always
+        container_name: spid
+        tty: true
+        privileged: true
+        environment:
+            - RECEIVER_HOST=172.20.0.112
+            - RECEIVER_PORT=8989
+            - USB_DEV_NAME=AUTO
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.115
+
+networks:
+  my_network:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24 
