@@ -7,7 +7,7 @@ services:
             - "50002:50002"
             - "5002:6002"
         environment:
-            - PRINTER_HOST=192.168.100.100
+            - PRINTER_HOST=192.168.100.101
             - PRINTER_PORT=50002
             - BY_ENCODE=ascii
             - STAY_TIME=10.0
@@ -92,8 +92,25 @@ services:
             my_network:
                 ipv4_address: 172.20.0.115
 
+    buzzer:
+        image: dmx-printer-buzzer:0.1
+        restart: always
+        container_name: dmx-printer-buzzer
+        environment:
+            - PORT=1919
+            - BUZZER_PIN=18
+            - BUZZER_ON_TIME=0.5
+            - BUZZER_OFF_TIME=0.5
+            - BUZZER_MOCK=True
+            - DEBUG_PRINT=True
+        ports:
+            - "1919:1919"
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.116
+
 networks:
   my_network:
     ipam:
       config:
-        - subnet: 172.20.0.0/24 
+        - subnet: 172.20.0.0/24

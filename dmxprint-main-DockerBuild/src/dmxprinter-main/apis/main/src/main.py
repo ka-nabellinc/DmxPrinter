@@ -1,10 +1,14 @@
 from gpiozero import Button
+import datetime
+from kv_dmx_printer.kv_dmx_printer import kvDmxPrinter
 import time
 import os
 import configparser
 import sys
 import threading
 import queue
+import urllib.request
+
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, root_dir)
 
@@ -60,6 +64,14 @@ class main:
         self.uuid_port     = int(config_ini.get('UUID', 'UUID_PORT'))
         self.conveyor_host = config_ini['CONVEYOR']['CONVEYOR_HOST']
         self.conveyor_port = int(config_ini.get('CONVEYOR', 'CONVEYOR_PORT'))
+
+        self.oee_host = config_ini['OEE']['OEE_HOST']
+        self.oee_port = int(config_ini.get('OEE', 'OEE_PORT'))
+
+        BUZZER_HOST = os.getenv("BUZZER_HOST", "dmx-printer-buzzer")
+        BUZZER_PORT = int(os.getenv("BUZZER_PORT", "1919"))
+        self._buzzer_url = f"http://{BUZZER_HOST}:{BUZZER_PORT}"
+        
         self.by_encode     = config_ini['DEBUG']['DEBUG_BY_ENCODE']
         self.delay         = float(config_ini.get('DEBUG', 'DEBUG_DELAY'))
         self.timeout       = float(config_ini.get('DEBUG', 'DEBUG_TIMEOUT'))
@@ -146,6 +158,11 @@ class main:
         self.marker_button = Button(INPUT_PIN, pull_up=PULL_UP_RESISTOR)
         self.marker_button.when_pressed = self._on_marker_detected
 
+        self.dmx_printer = kvDmxPrinter(
+            host=self.oee_host,
+            port=self.oee_port
+        )
+        self.buzzer_on_flag = 0
     # ------------------------------------------------------------------
     # リスナー：レスポンスをプレフィックスで振り分け
     # ------------------------------------------------------------------
@@ -183,6 +200,33 @@ class main:
                 print(f"[listener] エラー: {e} — 再起動します", flush=True)
                 time.sleep(0.1)
 
+
+    # ------------------------------------------------------------------
+    # ブザー：ブザーをON/OFFする
+    # ------------------------------------------------------------------
+
+    def buzzer_on(self):
+        try:
+            req = urllib.request.Request(
+                f"{self._buzzer_url}/buzzer/on", method="POST", data=b""
+            )
+            urllib.request.urlopen(req, timeout=2)
+        except Exception as e:
+            print(f"[buzzer] ON 失敗: {e}", flush=True)
+
+    def buzzer_off(self):
+        try:
+            req = urllib.request.Request(
+                f"{self._buzzer_url}/buzzer/off", method="POST", data=b""
+            )
+            urllib.request.urlopen(req, timeout=2)
+        except Exception as e:
+            print(f"[buzzer] OFF 失敗: {e}", flush=True)
+
+
+
+
+
     # ------------------------------------------------------------------
     # 印刷ワーカー：BLOCK_WRITE → PRINTING を別スレッドで実行
     # ------------------------------------------------------------------
@@ -213,7 +257,20 @@ class main:
                 return
             next_uuid = next_uuid.strip()
 
-            self.Commander.printer_send_command("BLOCK_WRITE", current_job_id, next_uuid)
+            # PRINTING 完了直後はプリンターがポートを再開放するまで短く待機する。
+            # 待機なしで即座に接続すると [Errno 111] Connection refused が発生する。
+            time.sleep(0.15)
+            if self.initstate != 1:
+                return
+
+            sent = self.Commander.printer_send_command("BLOCK_WRITE", current_job_id, next_uuid)
+            if not sent:
+                # 接続失敗（Connection refused 等）→ キュー待ちせずに即フォールバック
+                print("[prefetch] BLOCK_WRITE 送信失敗 — フォールバック", flush=True)
+                with self._prefetch_lock:
+                    self._prefetch_done = False
+                return
+
             _t = time.monotonic()
             resp_bw = self._wx_queue.get(timeout=self.Commander.timeout)
             print(
@@ -418,9 +475,13 @@ class main:
 
                 if res is None:
                     print("NG検査: 応答なし/接続失敗 — ライン停止", flush=True)
+                    threading.Thread(target=self.buzzer_on, daemon=True).start()
+                    self.buzzer_on_flag = 1
                     self.stop()
                 elif "ERROR" in res.upper():
                     print(f"NG検査 OUT (ERROR): {res!r} — ライン停止", flush=True)
+                    threading.Thread(target=self.buzzer_on, daemon=True).start()
+                    self.buzzer_on_flag = 1
                     self.stop()
 
             except Exception as e:
@@ -486,6 +547,7 @@ class main:
         )
 
     def start(self):
+        self.dmx_printer.recordSetupEndTime(datetime.datetime.now())
         self.starter = 1
         self._conveyor_only_started = False   # Bug②: 再 START 時はモード判定をリセット
         with self._sensor_lock:
@@ -509,6 +571,7 @@ class main:
             is_full_stop     = (qty_snapshot == 0)
 
             self.stoping()
+
             # Bug① 修正:
             #   NGセンサー等による一時停止（qty > 0）→ printed を引き継いで再開。
             #   フロントエンドSTOP（qty=0 に reset済）→ printed もリセットして
@@ -771,6 +834,7 @@ class main:
         self.job_id = "none"
         self.starter   = 0
         self.initstate = 0
+        self.dmx_printer.recordOperationEndTime(datetime.now())  
         self.Commander.uuid_gen('STOP')
         print(f"UUID generation stopped.")
         self.Commander.printer_send_command("STOP", self.spi.job.jobNum, 'none')
@@ -778,6 +842,12 @@ class main:
         self._flush_queues(reason="STOP応答")
         self.Commander.stop_conveyor()
         print("Conveyor stopped.")
+        if self.buzzer_on_flag == 0:
+            threading.Thread(target=self.buzzer_off, daemon=True).start()
+        else:
+            self.buzzer_on_flag = 0
+
+
 
 
 if __name__ == "__main__":
@@ -794,6 +864,7 @@ if __name__ == "__main__":
             if main_instance.spi.job.qty > 0 and main_instance.printed >= main_instance.spi.job.qty:
                 time.sleep(2)
                 main_instance.stoping()
+                threading.Thread(target=main_instance.buzzer_on, daemon=True).start()
                 # ジョブ自然完了: printed カウンタをリセットして
                 # 次の START で同一ジョブIDでも正しくゼロから開始できるようにする
                 main_instance.printed = 0
