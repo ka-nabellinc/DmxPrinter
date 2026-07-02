@@ -33,10 +33,11 @@ class thread(threading.Thread):
 
 
 class ServerHandler(http.server.SimpleHTTPRequestHandler):
-	def __init__(self, *args, directory=None, startFunc=None, stopFunc=None, job=None, debug=False, **kwargs):
+	def __init__(self, *args, directory=None, startFunc=None, stopFunc=None, jobLoadFunc=None, job=None, debug=False, **kwargs):
 		self.__debug = debug
 		self.__startFunc = startFunc
 		self.__stopFunc = stopFunc
+		self.__jobLoadFunc = jobLoadFunc
 		self.__job = job
 
 		super().__init__(*args, directory=directory, **kwargs)
@@ -85,6 +86,8 @@ class ServerHandler(http.server.SimpleHTTPRequestHandler):
 		self.__job.jobNum = j["job"]
 		self.__job.qty = j["qty"]
 		self.__job.uid = j["uid"]
+		if self.__jobLoadFunc is not None:
+			self.__jobLoadFunc()
 
 
 	def startSW(self):
@@ -114,11 +117,12 @@ class job():
 
 
 class sleevePrinterInterface():
-	def __init__(self, port=8989, startFunc=None, stopFunc=None, debug=False):
+	def __init__(self, port=8989, startFunc=None, stopFunc=None, jobLoadFunc=None, debug=False):
 		self.__port = port
 		self.__debug = debug
 		self.__startFunc = startFunc
 		self.__stopFunc = stopFunc
+		self.__jobLoadFunc = jobLoadFunc
 
 		self.job = job()
 
@@ -135,9 +139,10 @@ class sleevePrinterInterface():
 			print("Server Start")
 
 		handler = partial(
-			ServerHandler, 
-			startFunc=self.__startFunc, 
-			stopFunc=self.__stopFunc, 
+			ServerHandler,
+			startFunc=self.__startFunc,
+			stopFunc=self.__stopFunc,
+			jobLoadFunc=self.__jobLoadFunc,
 			job=self.job,
 			debug=self.__debug
 		)

@@ -103,11 +103,29 @@ services:
             - BUZZER_OFF_TIME=0.5
             - BUZZER_MOCK=True
             - DEBUG_PRINT=True
-        ports:
+        ports: 
             - "1919:1919"
         networks:
             my_network:
                 ipv4_address: 172.20.0.116
+
+    kv-host-emulator:
+        image: kv-host-emulator:dmxprinter-0.1
+        restart: always
+        container_name: kv-host-emulator
+        environment:
+            - EMULATOR_HOST=0.0.0.0
+            - EMULATOR_PORT=8501
+            - RESTAPI_HOST=0.0.0.0
+            - RESTAPI_PORT=3000
+            - DEBUG_PRINT=True
+        ports:
+            - "8501:8501/udp"
+            - "3000:3000"
+        networks:
+            my_network:
+                ipv4_address: 172.20.0.117
+
 
 networks:
   my_network:

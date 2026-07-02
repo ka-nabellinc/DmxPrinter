@@ -100,9 +100,10 @@ class main:
         self._conveyor_only_started = False  # コンベアのみ起動済みフラグ
 
         self.spi = sleevePrinterInterface.sleevePrinterInterface(
-            port      = 8989,
-            startFunc = self.start,
-            stopFunc  = self.stop,
+            port         = 8989,
+            startFunc    = self.start,
+            stopFunc     = self.stop,
+            jobLoadFunc  = self.setup,
         )
 
         self._sensor_lock        = threading.Lock()
@@ -476,12 +477,12 @@ class main:
                 if res is None:
                     print("NG検査: 応答なし/接続失敗 — ライン停止", flush=True)
                     threading.Thread(target=self.buzzer_on, daemon=True).start()
-                    self.buzzer_on_flag = 1
+                    threading.Thread(target=self.dmx_printer.incrementDefectCount, daemon=True).start()
                     self.stop()
                 elif "ERROR" in res.upper():
                     print(f"NG検査 OUT (ERROR): {res!r} — ライン停止", flush=True)
                     threading.Thread(target=self.buzzer_on, daemon=True).start()
-                    self.buzzer_on_flag = 1
+                    threading.Thread(target=self.dmx_printer.incrementDefectCount, daemon=True).start()
                     self.stop()
 
             except Exception as e:
@@ -546,8 +547,27 @@ class main:
             flush=True,
         )
 
+    def setup(self):
+        threading.Thread(target=self._oee_job_setup, daemon=True).start()
+
+    def _oee_job_setup(self):
+        now = datetime.datetime.now()
+        self.dmx_printer.recordSetupStartTime(now)
+        self.dmx_printer.recordJobNumber(self.spi.job.jobNum)
+        self.dmx_printer.recordPlannedPrintQty(self.spi.job.qty)
+
     def start(self):
-        self.dmx_printer.recordSetupEndTime(datetime.datetime.now())
+        if self._last_init_job_id is None:
+            threading.Thread(
+                target=lambda: self.dmx_printer.recordSetupEndTime(datetime.datetime.now()),
+                daemon=True
+            ).start()
+        else:
+            threading.Thread(
+                target=lambda: self.dmx_printer.recordTroubleEndTime(datetime.datetime.now()),
+                daemon=True
+            ).start()
+        threading.Thread(target=self.buzzer_off, daemon=True).start()
         self.starter = 1
         self._conveyor_only_started = False   # Bug②: 再 START 時はモード判定をリセット
         with self._sensor_lock:
@@ -559,16 +579,25 @@ class main:
 
     def stop(self):
         with self._stop_lock:
-            if self.starter == 0 and self.initstate == 0:
-                return
-
             # ─── フロントエンド STOP vs NGセンサー一時停止の判別 ─────────────
             # stopSW() が呼ばれると job.reset() により qty=0 になる（フロントエンドSTOP）。
             # NGセンサー等からの一時停止では qty は元の値のまま。
             # これを使って「完全停止」か「再開前提の一時停止」かを判別する。
-            qty_snapshot     = self.spi.job.qty   # job.reset()後なら0
+            qty_snapshot = self.spi.job.qty   # job.reset()後なら0
+            is_full_stop = (qty_snapshot == 0)
+
+            # guard より先にブザーを止める。
+            # NGストップ後に再始動せずStopボタンを押した場合、
+            # starter==0 かつ initstate==0 で guard が発火して早期 return するため
+            # ブザーが止まらなくなる不具合を防ぐ。
+            if is_full_stop:
+                threading.Thread(target=self.buzzer_off, daemon=True).start()
+
+            if self.starter == 0 and self.initstate == 0:
+                return
+
             printed_snapshot = self.printed        # ログ用スナップショット
-            is_full_stop     = (qty_snapshot == 0)
+
 
             self.stoping()
 
@@ -596,6 +625,14 @@ class main:
                 # 次の START で同一ジョブIDでも必ずゼロから開始できるようにする
                 self.printed = 0
                 self._last_init_job_id = None
+                _snap = printed_snapshot
+                threading.Thread(
+                    target=lambda: (
+                        self.dmx_printer.recordOperationEndTime(datetime.datetime.now()),
+                        self.dmx_printer.recordPrintCount(_snap),
+                    ),
+                    daemon=True,
+                ).start()
                 print(
                     f"[stop] 停止完了（完全停止）"
                     f" 印字済={printed_snapshot} / qty がリセット済のため残数不明",
@@ -603,6 +640,10 @@ class main:
                 )
             else:
                 # NGセンサー等による一時停止: printed を保持（再開時に引き継ぐ）
+                threading.Thread(
+                    target=lambda: self.dmx_printer.recordTroubleStartTime(datetime.datetime.now()),
+                    daemon=True,
+                ).start()
                 remaining = qty_snapshot - self.printed
                 print(
                     f"[stop] 停止完了（一時停止）"
@@ -831,10 +872,9 @@ class main:
             print(f"[run] 予期しない例外: {e}", flush=True)
 
     def stoping(self):
-        self.job_id = "none"
+        self.job_id = 0
         self.starter   = 0
         self.initstate = 0
-        self.dmx_printer.recordOperationEndTime(datetime.now())  
         self.Commander.uuid_gen('STOP')
         print(f"UUID generation stopped.")
         self.Commander.printer_send_command("STOP", self.spi.job.jobNum, 'none')
@@ -842,10 +882,7 @@ class main:
         self._flush_queues(reason="STOP応答")
         self.Commander.stop_conveyor()
         print("Conveyor stopped.")
-        if self.buzzer_on_flag == 0:
-            threading.Thread(target=self.buzzer_off, daemon=True).start()
-        else:
-            self.buzzer_on_flag = 0
+       
 
 
 
@@ -863,8 +900,16 @@ if __name__ == "__main__":
 
             if main_instance.spi.job.qty > 0 and main_instance.printed >= main_instance.spi.job.qty:
                 time.sleep(2)
+                _printed_snap = main_instance.printed
                 main_instance.stoping()
                 threading.Thread(target=main_instance.buzzer_on, daemon=True).start()
+                threading.Thread(
+                    target=lambda: (
+                        main_instance.dmx_printer.recordOperationEndTime(datetime.datetime.now()),
+                        main_instance.dmx_printer.recordPrintCount(_printed_snap),
+                    ),
+                    daemon=True,
+                ).start()
                 # ジョブ自然完了: printed カウンタをリセットして
                 # 次の START で同一ジョブIDでも正しくゼロから開始できるようにする
                 main_instance.printed = 0
