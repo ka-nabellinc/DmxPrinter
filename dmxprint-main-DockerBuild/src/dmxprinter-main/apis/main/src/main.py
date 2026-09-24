@@ -71,6 +71,11 @@ class main:
         BUZZER_HOST = os.getenv("BUZZER_HOST", "dmx-printer-buzzer")
         BUZZER_PORT = int(os.getenv("BUZZER_PORT", "1919"))
         self._buzzer_url = f"http://{BUZZER_HOST}:{BUZZER_PORT}"
+        # ブザーON遅延：自動整列機構のアームが下り切ってから鳴らすための待機秒数
+        self._buzzer_on_delay = float(os.getenv("BUZZER_ON_DELAY", "5.0"))
+        # 遅延中の OFF 要求で ON をキャンセルするための世代カウンタ
+        self._buzzer_gen = 0
+        self._buzzer_gen_lock = threading.Lock()
         
         self.by_encode     = config_ini['DEBUG']['DEBUG_BY_ENCODE']
         self.delay         = float(config_ini.get('DEBUG', 'DEBUG_DELAY'))
@@ -207,6 +212,15 @@ class main:
     # ------------------------------------------------------------------
 
     def buzzer_on(self):
+        # 遅延待機中に buzzer_off() が呼ばれたら ON しない
+        with self._buzzer_gen_lock:
+            gen = self._buzzer_gen
+        if self._buzzer_on_delay > 0:
+            time.sleep(self._buzzer_on_delay)
+        with self._buzzer_gen_lock:
+            if gen != self._buzzer_gen:
+                print("[buzzer] 遅延中に OFF 要求があったため ON をキャンセル", flush=True)
+                return
         try:
             req = urllib.request.Request(
                 f"{self._buzzer_url}/buzzer/on", method="POST", data=b""
@@ -216,6 +230,8 @@ class main:
             print(f"[buzzer] ON 失敗: {e}", flush=True)
 
     def buzzer_off(self):
+        with self._buzzer_gen_lock:
+            self._buzzer_gen += 1
         try:
             req = urllib.request.Request(
                 f"{self._buzzer_url}/buzzer/off", method="POST", data=b""
