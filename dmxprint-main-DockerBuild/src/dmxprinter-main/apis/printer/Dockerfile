@@ -7,7 +7,8 @@ RUN apt-key adv --recv-keys --keyserver keyserver.ubuntu.com 0xcbcb082a1bb943db
 RUN apt update && apt upgrade -y && apt dist-upgrade -y && apt install net-tools -y && apt install inetutils-ping -y
 RUN apt install -y tzdata
 
-RUN apt install -y git nano python3 python3-pip
+RUN apt-get update \
+    && apt-get install -y ca-certificates git nano python3 python3-pip
 
 RUN mkdir /home/Python
 COPY src /home/Python
